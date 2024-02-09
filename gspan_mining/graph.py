@@ -26,11 +26,12 @@ class Graph(object):
         if edges:
             for edge in edges:
                 self.add_edge(*edge.split())
+
         self.is_undirected = is_undirected
 
     def add_vertex(self, vertex):
         """Add a vertex to this graph."""
-        vid, vlb = vertex.split()
+        vid, vlb = vertex.split(None, 1)
         if vid not in self.vertices:
             self.vertices[vid] = vlb
             return True
