@@ -22,14 +22,15 @@ class Graph(object):
         self.eid_auto_increment = eid_auto_increment
         if vertices:
             for vertex in vertices:
-                self.add_vertex(*vertex.split())
+                self.add_vertex(vertex)
         if edges:
             for edge in edges:
                 self.add_edge(*edge.split())
         self.is_undirected = is_undirected
 
-    def add_vertex(self, vid, vlb):
+    def add_vertex(self, vertex):
         """Add a vertex to this graph."""
+        vid, vlb = vertex.split()
         if vid not in self.vertices:
             self.vertices[vid] = vlb
             return True
