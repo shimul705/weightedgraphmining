@@ -4,6 +4,8 @@ import itertools
 import time
 import numpy as np
 import math
+import pandas as pd
+
 
 from .graph import AUTO_EDGE_ID
 from .graph import Graph
