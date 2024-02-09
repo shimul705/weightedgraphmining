@@ -18,10 +18,11 @@ import pandas as pd
 
 def record_timestamp(func):
     """Record timestamp before and after call of `func`."""
-    def deco(self):
-        self.timestamps[func.__name__ + '_in'] = time.time()
-        func(self)
-        self.timestamps[func.__name__ + '_out'] = time.time()
+    def deco(*args, **kwargs):
+        timestamps = args[0].timestamps
+        timestamps[func.__name__ + '_in'] = time.time()
+        func(*args, **kwargs)
+        timestamps[func.__name__ + '_out'] = time.time()
     return deco
 
 
@@ -339,32 +340,75 @@ class gSpan(object):
             self._projected = self._projected[:0]
             self._projected = self._projected + projected[i + 1:]
 
-            # `get_projected` should be implemented in a derived class.
-            self._get_projected(gid, history, projected[i:])
-            self._DFScode.build_rmpath()
-            self._subgraph_mining(self._projected)
+            # `get_candidates` might be empty when it is called for the first time,
+            # since it is calculated for the first time.
+            if pdfs.edge is None:
+                current_candidates = self._get_candidates(gid, None, None)
+            else:
+                current_candidates = self._get_candidates(
+                    gid, pdfs.edge.to, history
+                )
+            if self._verbose:
+                print('current candidates:', len(current_candidates))
+            for edge in current_candidates:
+                if self._verbose:
+                    print('candidate edge:', edge)
+                new_dfscode = copy.deepcopy(self._DFScode)
+                new_pdfsg = self._projected_graph(gid, edge)
+                if new_pdfsg:
+                    new_projected = copy.deepcopy(self._projected)
+                    new_projected = new_projected.push_back(gid, edge, pdfs)
+                    self._subgraph_mining(new_projected)
 
-            if self._visualize:
-                self._visualize_graph()
+    def _get_candidates(self, gid, last_vertex, history):
+        """Return candidate edges of a graph."""
+        if last_vertex is None:
+            vertex_iterator = sorted(
+                list(self.graphs[gid].vertices.keys()))
+        else:
+            vertex_iterator = sorted(
+                list(self.graphs[gid].vertices.keys()))[last_vertex + 1:]
 
-    def _get_projected(self, gid, history, projected):
-        """Get projected graphs."""
-        raise NotImplementedError('You should implement _get_projected method.')
+        candidates = set()
+        for frm in vertex_iterator:
+            edges = self.graphs[gid].vertex[frm]
+            if not edges:
+                continue
+            for edge in edges:
+                if not history.has_vertex(edge.to):
+                    candidates.add(edge)
+        return candidates
 
-    def _visualize_graph(self):
-        """Visualize the projected graph."""
-        raise NotImplementedError('You should implement _visualize_graph method.')
+    def _projected_graph(self, gid, edge):
+        """Return projected graph from DFS code."""
+        graph = self.graphs[gid]
+        edge_label = graph.edges[edge.eid].elb
+        last_vid = edge.to
+
+        projected_edges = []
+        for e in graph.vertex[last_vid]:
+            if e.elb == edge_label:
+                projected_edges.append(e)
+
+        if not projected_edges:
+            return None
+
+        projected_graph = Projected()
+        for projected_edge in projected_edges:
+            projected_graph.push_back(gid, projected_edge, None)
+
+        return projected_graph
 
 
 def main(FLAGS=None):
     """Run gSpan."""
 
     if FLAGS is None:
-        FLAGS, _ = parser.parse_known_args(args=sys.argv[1:])
+        FLAGS, _ = parser.parse_known_args()
 
     if not os.path.exists(FLAGS.database_file_name):
         print('{} does not exist.'.format(FLAGS.database_file_name))
-        sys.exit()
+        return
 
     gs = gSpan(
         database_file_name=FLAGS.database_file_name,
