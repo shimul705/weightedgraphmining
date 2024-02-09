@@ -15,14 +15,12 @@ from .graph import VACANT_VERTEX_LABEL
 
 import pandas as pd
 
-
 def record_timestamp(func):
     """Record timestamp before and after call of `func`."""
-    def deco(*args, **kwargs):
-        timestamps = args[0].timestamps
-        timestamps[func.__name__ + '_in'] = time.time()
-        func(*args, **kwargs)
-        timestamps[func.__name__ + '_out'] = time.time()
+    def deco(self):
+        self.timestamps[func.__name__ + '_in'] = time.time()
+        func(self)
+        self.timestamps[func.__name__ + '_out'] = time.time()
     return deco
 
 
@@ -90,12 +88,12 @@ class DFScode(list):
                   is_undirected=is_undirected,
                   eid_auto_increment=True)
         for dfsedge in self:
-            frm, to, (vlb1, elb, vlb2) = dfsedge.frm, dfsedge.to, dfsedge.vevlb
+            frm, to, (vlb1, elb, vlb2, weight) = dfsedge.frm, dfsedge.to, dfsedge.vevlb
             if vlb1 != VACANT_VERTEX_LABEL:
                 g.add_vertex(frm, vlb1)
             if vlb2 != VACANT_VERTEX_LABEL:
                 g.add_vertex(to, vlb2)
-            g.add_edge(AUTO_EDGE_ID, frm, to, elb)
+            g.add_edge(AUTO_EDGE_ID, frm, to, elb, weight)
         return g
 
     def from_graph(self, g):
@@ -185,6 +183,7 @@ class gSpan(object):
     def __init__(self,
                  database_file_name,
                  min_support=10,
+                 min_weighted_support=10,
                  min_num_vertices=1,
                  max_num_vertices=float('inf'),
                  max_ngraphs=float('inf'),
@@ -198,6 +197,7 @@ class gSpan(object):
         self._max_ngraphs = max_ngraphs
         self._is_undirected = is_undirected
         self._min_support = min_support
+        self._min_weighted_support = min_weighted_support
         self._min_num_vertices = min_num_vertices
         self._max_num_vertices = max_num_vertices
         self._DFScode = DFScode()
@@ -213,229 +213,448 @@ class gSpan(object):
         self.timestamps = dict()
         if self._max_num_vertices < self._min_num_vertices:
             print('Max number of vertices can not be smaller than '
-                  'min number of that.\nMax number of vertices is '
-                  'set as infinite.')
-            self._max_num_vertices = float('inf')
+                  'min number of that.\n'
+                  'Set max_num_vertices = min_num_vertices.')
+            self._max_num_vertices = self._min_num_vertices
         self._report_df = pd.DataFrame()
 
     def time_stats(self):
-        """Print the time statistics."""
-        timestamps = self.timestamps
-        for k, v in timestamps.items():
-            if k.endswith('_in'):
-                print(k[:-3] + ':', v)
-                print(k[:-3] + '_time:', timestamps[k[:-3] + '_out'] - v)
+        """Print stats of time."""
+        func_names = ['_read_graphs', 'run']
+        time_deltas = collections.defaultdict(float)
+        for fn in func_names:
+            time_deltas[fn] = round(
+                self.timestamps[fn + '_out'] - self.timestamps[fn + '_in'],
+                2
+            )
 
-    @record_timestamp
+        print('Read:\t{} s'.format(time_deltas['_read_graphs']))
+        print('Mine:\t{} s'.format(time_deltas['run']))
+
     def run(self):
         """Run the gSpan algorithm."""
+        self.timestamps['run_in'] = time.time()
         self._read_graphs()
-        self._frequent_size1_subgraphs = self._get_frequent_size1_subgraphs()
-        self._frequent_subgraphs += self._frequent_size1_subgraphs
-        self._report_df = pd.DataFrame()
-        for gid in sorted(self.graphs.keys()):
-            self._DFScode = DFScode()
-            self._projected = Projected()
-            self._report_df = self._report_df.append(
-                self._subgraph_mining(Projected(), gid),
-                ignore_index=True
+        self._frequent_size1_subgraphs = self._find_frequent_size1_subgraphs()
+        if self._verbose:
+            print('Frequent subgraphs of size 1: {}'.format(
+                len(self._frequent_size1_subgraphs)
+            ))
+        if self._visualize:
+            self._visualize_patterns()
+        self._frequent_subgraphs = copy.deepcopy(
+            self._frequent_size1_subgraphs
+        )
+        for frequent_subgraph in self._frequent_subgraphs:
+            dfscode = DFScode().push_back(
+                frequent_subgraph[0],
+                frequent_subgraph[1],
+                frequent_subgraph[2]
             )
-        self._report_df['support'] = self._report_df['support'].astype(int)
+            # self._DFScode = copy.deepcopy(dfscode)
+            # self._support = frequent_subgraph[3]
+            self._subgraph_mining(dfscode, frequent_subgraph[3])
+        if self._verbose:
+            print('Frequent subgraphs (with full edges): {}'.format(
+                len(self._frequent_subgraphs)
+            ))
+        self.timestamps['run_out'] = time.time()
+        self._where = False
+        if self._verbose:
+            self.time_stats()
         if self._where:
-            self._report_df['where'] = self._report_df['where'].astype(str)
-        self._report_df.sort_values(by=['support', 'where'],
-                                    ascending=[False, True],
-                                    inplace=True)
-        return self._report_df
+            return self._frequent_subgraphs, self._report_df
+        return self._frequent_subgraphs
 
     def _read_graphs(self):
-        """Read graphs from the specified file."""
+        """Read graphs from the dataset file."""
         with codecs.open(self._database_file_name, 'r', 'utf-8') as f:
             lines = f.readlines()
-
-        lines.append('t # -1\n')
-
-        lines = [x.strip() for x in lines]
-        current_gid = None
-        vertices = []
-        edges = []
+        graph_cnt = -1
         for line in lines:
-            if line.startswith('t #'):
-                if current_gid is not None:
-                    self.graphs[current_gid] = Graph(current_gid,
-                                                     vertices,
-                                                     edges,
-                                                     is_undirected=self._is_undirected,
-                                                     eid_auto_increment=True)
-                    if len(self.graphs) >= self._max_ngraphs:
-                        break
-                    vertices = []
-                    edges = []
-                current_gid = int(line.split()[-1])
-            elif line.startswith('v '):
-                vertices.append(line)
-            elif line.startswith('e '):
-                edges.append(line)
+            if line.startswith('t'):
+                graph_cnt += 1
+                self.graphs[graph_cnt] = Graph(gid=graph_cnt,
+                                                is_undirected=self._is_undirected)
+            elif line.startswith('v'):
+                _, vid, vlb = line.strip().split()
+                vid, vlb = int(vid), int(vlb)
+                self.graphs[graph_cnt].add_vertex(vid, vlb)
+            elif line.startswith('e'):
+                _, frm, to, elb, weight = line.strip().split()
+                frm, to, elb, weight = int(frm), int(to), int(elb), int(weight)
+                self.graphs[graph_cnt].add_edge(AUTO_EDGE_ID, frm, to, elb, weight)
+        self.graphs = {gid: g for gid, g in self.graphs.items() if len(g.vertices) >= self._min_num_vertices}
+        return self
 
-    def _get_frequent_size1_subgraphs(self):
-        """Return frequent subgraphs of size 1."""
-        single_edge_labels = collections.defaultdict(int)
-        for gid in self.graphs.keys():
-            g = self.graphs[gid]
-            for e in g.edges.values():
-                single_edge_labels[e.elb] += 1
+    def _find_frequent_size1_subgraphs(self):
+        """Find frequent subgraphs with size 1."""
+        vertex_labels = collections.defaultdict(int)
+        edge_labels = collections.defaultdict(int)
+        for gid, g in self.graphs.items():
+            for vid, vertex in g.vertices.items():
+                vertex_labels[vertex.vlb] += 1
+                for edge in vertex.edges.values():
+                    edge_labels[edge.elb] += 1
+        vertex_labels = {k: v for k, v in vertex_labels.items() if v >= self._min_support}
+        edge_labels = {k: v for k, v in edge_labels.items() if v >= self._min_support}
+        frequent_size1_subgraphs = list()
+        for gid, g in self.graphs.items():
+            for vid, vertex in g.vertices.items():
+                if vertex.vlb in vertex_labels:
+                    frequent_size1_subgraphs.append((VACANT_VERTEX_ID,
+                                                     vid,
+                                                     (vertex.vlb,
+                                                      VACANT_EDGE_LABEL,
+                                                      VACANT_VERTEX_LABEL, 1),
+                                                     vertex_labels[vertex.vlb]))
+                for edge in vertex.edges.values():
+                    if edge.elb in edge_labels:
+                        frequent_size1_subgraphs.append((edge.frm,
+                                                         edge.to,
+                                                         (VACANT_VERTEX_LABEL,
+                                                          edge.elb,
+                                                          VACANT_VERTEX_LABEL,
+                                                          edge.weight),
+                                                         edge_labels[edge.elb]))
+        frequent_size1_subgraphs = sorted(
+            frequent_size1_subgraphs,
+            key=lambda x: (x[3], x[0], x[1])
+        )
+        return frequent_size1_subgraphs
 
-        frequent_subgraphs = []
-        for elb, support in single_edge_labels.items():
-            if support >= self._min_support:
-                dfscode = DFScode()
-                dfscode.push_back(0, 1, (VACANT_VERTEX_LABEL, elb, VACANT_VERTEX_LABEL))
-                frequent_subgraphs.append((dfscode, support))
-
-        return frequent_subgraphs
-
-    @record_timestamp
-    @record_timestamp
-    def _subgraph_mining(self, projected, gid):
-        """Return the report dataframe of the projected frequent subgraphs."""
-        self._support = len(projected)
-        if self._support >= self._min_support:
-            if self._DFScode.get_num_vertices() < self._min_num_vertices:
-                return pd.DataFrame()
-
-            if self._verbose:
-                print('frequent subgraph:', self._DFScode, 'support:', self._support)
-
-            self._frequent_subgraphs.append(
-                (copy.deepcopy(self._DFScode), self._support)
-            )
-        if self._DFScode.get_num_vertices() == self._max_num_vertices:
-            return pd.DataFrame()
-
-        if self._where:
-            projected = sorted(projected,
-                            key=lambda p: (self.graphs[p.gid].name,
-                                            p.edge.frm if p.edge else -1))
-
-        history = History(None, None)
-        for i, pdfs in enumerate(projected):
-            gid = pdfs.gid
-            if self._where:
-                graph_name = self.graphs[gid].name
-            else:
-                graph_name = None
-            if pdfs.edge:
-                if pdfs.edge.frm != VACANT_VERTEX_LABEL:
-                    vlb_fr, vlb_to = self.graphs[gid].vertices[pdfs.edge.frm], \
-                                    self.graphs[gid].vertices[pdfs.edge.to]
-                    elb = self.graphs[gid].edges[pdfs.edge.eid].elb
-                    history.vertices_used[vlb_fr] = 1
-                    history.vertices_used[vlb_to] = 1
-                    history.edges_used[pdfs.edge.eid] = 1
-                    self._DFScode.push_back(pdfs.edge.frm,
-                                            pdfs.edge.to,
-                                            (vlb_fr, elb, vlb_to))
-
-            if self._verbose:
-                print('projected graph:', i, 'graph id:', gid, 'graph name:', graph_name)
-            self._projected = self._projected[:0]
-            self._projected = self._projected + projected[i + 1:]
-
-            # `get_candidates` might be empty when it is called for the first time,
-            # since it is calculated for the first time.
-            if pdfs.edge is None:
-                current_candidates = self._get_candidates(gid, None, None)
-            else:
-                current_candidates = self._get_candidates(
-                    gid, pdfs.edge.to, history
+    def _subgraph_mining(self, dfscode, support):
+        """Subgraph mining."""
+        if dfscode.get_num_vertices() > self._max_num_vertices:
+            return self
+        if support < self._min_support:
+            return self
+        if dfscode.get_num_vertices() >= self._min_num_vertices:
+            self._report(dfscode, support)
+        if dfscode.get_num_vertices() == self._max_num_vertices:
+            return self
+        for vid, vertex_label_support in self._support_vertex_labels(dfscode).items():
+            for edge in self._valid_edge_labels(dfscode, vid):
+                new_dfscode = self._embed(dfscode, vid, vertex_label_support,
+                                           edge)
+                new_support = min(
+                    vertex_label_support,
+                    self._support_edge_labels(new_dfscode, vid, edge)
                 )
-            if self._verbose:
-                print('current candidates:', len(current_candidates))
-            for edge in current_candidates:
-                if self._verbose:
-                    print('candidate edge:', edge)
-                new_dfscode = copy.deepcopy(self._DFScode)
-                new_pdfsg = self._projected_graph(gid, edge)
-                if new_pdfsg:
-                    new_projected = copy.deepcopy(self._projected)
-                    new_projected = new_projected.push_back(gid, edge, pdfs)
-                    self._subgraph_mining(new_projected, gid)
+                self._subgraph_mining(new_dfscode, new_support)
+        return self
 
-        # Create or access the 'support' column of the DataFrame
-        if 'support' not in self._report_df.columns:
-            self._report_df['support'] = self._support
-        else:
-            self._report_df['support'] = self._report_df['support'].astype(int)
+    def _embed(self, dfscode, vid, vertex_label_support, edge):
+        """Embedding one edge into dfs code."""
+        new_dfscode = copy.deepcopy(dfscode)
+        old_vertex = new_dfscode[-1].to
+        if self._where:
+            old_fragment = dfscode
+        new_dfscode.push_back(
+            old_vertex,
+            vid,
+            (VACANT_VERTEX_LABEL,
+             edge[1],
+             VACANT_VERTEX_LABEL,
+             edge[3])
+        )
+        if self._where:
+            self._find_instances(new_dfscode, vertex_label_support)
+        return new_dfscode
 
+    def _support_vertex_labels(self, dfscode):
+        """Calculate the support of each vertex label."""
+        if not dfscode:
+            return collections.defaultdict(int)
+        prev_vertex = dfscode[-1].to
+        vertex_labels_support = collections.defaultdict(int)
+        for gid, g in self.graphs.items():
+            for vertex_id, vertex in g.vertices.items():
+                if vertex_id <= prev_vertex:
+                    continue
+                for edge in vertex.edges.values():
+                    if edge.to == prev_vertex:
+                        vertex_labels_support[vertex.vlb] += 1
+        return vertex_labels_support
 
-
-
-    def _get_candidates(self, gid, last_vertex, history):
-        """Return candidate edges of a graph."""
-        if last_vertex is None:
-            vertex_iterator = sorted(
-                list(self.graphs[gid].vertices.keys()))
-        else:
-            vertex_iterator = sorted(
-                list(self.graphs[gid].vertices.keys()))[last_vertex + 1:]
-
-        candidates = set()
-        for frm in vertex_iterator:
-            edges = self.graphs[gid].vertex[frm]
-            if not edges:
+    def _valid_edge_labels(self, dfscode, vid):
+        """Generate valid edge labels for vid."""
+        valid_edge_labels = list()
+        for gid, g in self.graphs.items():
+            if gid < dfscode[0].frm or gid > dfscode[0].to:
                 continue
-            for edge in edges:
-                if not history.has_vertex(edge.to):
-                    candidates.add(edge)
-        return candidates
+            if vid not in g.vertices:
+                continue
+            for edge in g.vertices[vid].edges.values():
+                if edge.to < dfscode[-1].to:
+                    continue
+                if self._where:
+                    if not self._DFScodeMatchVertex(gid, dfscode):
+                        continue
+                valid_edge_labels.append((edge.elb, edge.to, edge.weight))
+        return valid_edge_labels
 
-    def _projected_graph(self, gid, edge):
-        """Return projected graph from DFS code."""
-        graph = self.graphs[gid]
-        edge_label = graph.edges[edge.eid].elb
-        last_vid = edge.to
+    def _support_edge_labels(self, dfscode, vid, edge):
+        """Calculate the support of edge labels."""
+        if not dfscode:
+            return float('inf')
+        prev_vertex = dfscode[-1].to
+        if self._where:
+            prev_vertex = dfscode[-1].frm
+        edge_labels_support = collections.defaultdict(int)
+        for gid, g in self.graphs.items():
+            if gid < dfscode[0].frm or gid > dfscode[0].to:
+                continue
+            if vid not in g.vertices:
+                continue
+            for edge in g.vertices[vid].edges.values():
+                if edge.to < prev_vertex:
+                    continue
+                if self._where:
+                    if not self._DFScodeMatchVertex(gid, dfscode):
+                        continue
+                edge_labels_support[edge.elb] += 1
+        if self._where:
+            return sum(edge_labels_support.values())
+        return min(edge_labels_support.values())
 
-        projected_edges = []
-        for e in graph.vertex[last_vid]:
-            if e.elb == edge_label:
-                projected_edges.append(e)
+    def _report(self, dfscode, support):
+        """Report one frequent subgraph."""
+        new_graph = dfscode.to_graph(is_undirected=self._is_undirected)
+        if self._where:
+            self._frequent_subgraphs.append(
+                (new_graph,
+                 dfscode,
+                 support,
+                 self._where_edges)
+            )
+            self._where_edges = None
+            return self
+        self._frequent_subgraphs.append((new_graph, dfscode, support))
+        if not self._verbose:
+            return self
+        if len(self._frequent_subgraphs) % 100 == 0:
+            print(len(self._frequent_subgraphs))
+        return self
 
-        if not projected_edges:
-            return None
+    def _visualize_patterns(self):
+        """Visualize frequent patterns."""
+        for frequent_subgraph, _, _ in self._frequent_size1_subgraphs:
+            frequent_subgraph.plot()
+        return self
 
-        projected_graph = Projected()
-        for projected_edge in projected_edges:
-            projected_graph.push_back(gid, projected_edge, None)
+    def _find_instances(self, dfscode, vertex_label_support):
+        """Find instances of current frequent subgraph."""
+        self._where_edges = collections.defaultdict(list)
+        for gid, g in self.graphs.items():
+            if gid < dfscode[0].frm or gid > dfscode[0].to:
+                continue
+            if not self._DFScodeMatchVertex(gid, dfscode):
+                continue
+            history = History(g, None)
+            for vid, vertex in g.vertices.items():
+                if vertex.vlb != dfscode[0].vevlb[0]:
+                    continue
+                self._DFScodeMatchVertexFrom(history,
+                                             g,
+                                             vid,
+                                             dfscode,
+                                             vertex_label_support,
+                                             1)
 
-        return projected_graph
+    def _DFScodeMatchVertexFrom(self, history, g, vid, dfscode,
+                                vertex_label_support, edge_idx):
+        """Check if dfscode can be matched starting from vid."""
+        if edge_idx == len(dfscode):
+            return self
+        old_vertex, new_vertex, (vlb1, elb, vlb2, weight) = dfscode[edge_idx]
+        if self._where:
+            if new_vertex < vid or not self._DFScodeMatchVertex(g.gid, dfscode):
+                return self
+        for edge in g.vertices[vid].edges.values():
+            if edge.to < old_vertex:
+                continue
+            if (edge.elb == elb and
+                    not history.has_edge(edge.eid) and
+                    not history.has_vertex(edge.to) and
+                    not self._DFScodeHasDuplication(dfscode, vid, edge)):
+                self._where_edges[dfscode[edge_idx - 1].frm, vid].append(
+                    (edge.frm, edge.to, edge.elb, edge.weight)
+                )
+                history = History(g, history)
+                history.vertices_used[vid] = 1
+                history.edges_used[edge.eid] = 1
+                self._DFScodeMatchVertexFrom(history,
+                                             g,
+                                             edge.to,
+                                             dfscode,
+                                             vertex_label_support,
+                                             edge_idx + 1)
+        return self
+
+    def _DFScodeHasDuplication(self, dfscode, vid, edge):
+        """Check if there are duplications in DFS code."""
+        frm, to, (vlb1, elb, vlb2, weight) = dfscode[-1]
+        if self._is_undirected:
+            if to < frm:
+                return False
+            if to == frm:
+                return True
+        if self._is_undirected:
+            if (frm == vid and
+                    (vid, edge.to, edge.elb, edge.weight) in dfscode):
+                return True
+            if (to == vid and
+                    (edge.frm, vid, edge.elb, edge.weight) in dfscode):
+                return True
+        if (frm == vid and
+                to == edge.to and
+                elb == edge.elb):
+            return True
+        return False
+
+    def _DFScodeMatchVertex(self, gid, dfscode):
+        """Check if DFS code can be matched to gid."""
+        # Check graph gid has enough vertices.
+        min_vid = min(dfsedge.frm for dfsedge in dfscode)  # min vid in DFS code.
+        if len(self.graphs[gid].vertices) < min_vid:
+            return False
+        # DFS code needs at least one edge.
+        if len(dfscode) == 1:
+            return True
+        return self._DFScodeMatchEdge(gid, dfscode)
+
+    def _DFScodeMatchEdge(self, gid, dfscode):
+        """Check if DFS code can be matched to gid."""
+        first_edge = dfscode[0]
+        if self._is_undirected and first_edge.frm > first_edge.to:
+            first_edge.frm, first_edge.to = first_edge.to, first_edge.frm
+        for vid, vertex in self.graphs[gid].vertices.items():
+            for edge in vertex.edges.values():
+                if edge.to < first_edge.to:
+                    continue
+                if edge.elb != first_edge.vevlb[1]:
+                    continue
+                if edge.to > first_edge.to:
+                    continue
+                if edge.to == first_edge.to:
+                    if (edge.elb, edge.weight) != (first_edge.vevlb[1], first_edge.vevlb[3]):
+                        continue
+                if self._DFScodeMatchEdgeFrom(
+                        DFScode().push_back(first_edge.frm,
+                                            vid,
+                                            first_edge.vevlb),
+                        gid, dfscode[1:]):
+                    return True
+        return False
+
+    def _DFScodeMatchEdgeFrom(self, dfscode, gid, rest_dfscode):
+        """Check if DFS code can be matched to gid."""
+        if not rest_dfscode:
+            return True
+        prev_dfsedge, rest_dfscode = rest_dfscode[0], rest_dfscode[1:]
+        old_vertex, new_vertex, (vlb1, elb, vlb2, weight) = prev_dfsedge
+        if self._is_undirected:
+            if old_vertex > new_vertex:
+                old_vertex, new_vertex = new_vertex, old_vertex
+        if self._is_undirected:
+            if old_vertex == new_vertex:
+                for vid, vertex in self.graphs[gid].vertices.items():
+                    if vid < old_vertex:
+                        continue
+                    for edge in vertex.edges.values():
+                        if edge.to < old_vertex:
+                            continue
+                        if edge.to == old_vertex:
+                            if (edge.elb, edge.weight) != (elb, weight):
+                                continue
+                        if (self._DFScodeMatchEdgeFrom(
+                                DFScode().push_back(
+                                    old_vertex,
+                                    vid,
+                                    (VACANT_VERTEX_LABEL,
+                                     elb,
+                                     VACANT_VERTEX_LABEL,
+                                     weight)
+                                ),
+                                gid,
+                                rest_dfscode)):
+                            return True
+            for vid, vertex in self.graphs[gid].vertices.items():
+                if vid < old_vertex:
+                    continue
+                for edge in vertex.edges.values():
+                    if edge.to < new_vertex:
+                        continue
+                    if edge.elb != elb:
+                        continue
+                    if edge.to > new_vertex:
+                        continue
+                    if edge.to == new_vertex:
+                        if (edge.elb, edge.weight) != (elb, weight):
+                            continue
+                    if (self._DFScodeMatchEdgeFrom(
+                            DFScode().push_back(
+                                old_vertex,
+                                new_vertex,
+                                (VACANT_VERTEX_LABEL,
+                                 edge.elb,
+                                 VACANT_VERTEX_LABEL,
+                                 edge.weight)
+                            ),
+                            gid,
+                            rest_dfscode)):
+                        return True
+        for vid, vertex in self.graphs[gid].vertices.items():
+            if vid < old_vertex:
+                continue
+            for edge in vertex.edges.values():
+                if edge.to < new_vertex:
+                    continue
+                if edge.elb != elb:
+                    continue
+                if edge.to > new_vertex:
+                    continue
+                if edge.to == new_vertex:
+                    if (edge.elb, edge.weight) != (elb, weight):
+                        continue
+                if (self._DFScodeMatchEdgeFrom(
+                        DFScode().push_back(
+                            old_vertex,
+                            new_vertex,
+                            (VACANT_VERTEX_LABEL,
+                             edge.elb,
+                             VACANT_VERTEX_LABEL,
+                             edge.weight)
+                        ),
+                        gid,
+                        rest_dfscode)):
+                    return True
+        return False
 
 
-def main(FLAGS=None):
+def main(database_file_name,
+         min_support=10,
+         min_weighted_support=10,
+         min_num_vertices=1,
+         max_num_vertices=float('inf'),
+         max_ngraphs=float('inf'),
+         is_undirected=True,
+         verbose=False,
+         visualize=False,
+         where=False):
     """Run gSpan."""
-
-    if FLAGS is None:
-        FLAGS, _ = parser.parse_known_args()
-
-    if not os.path.exists(FLAGS.database_file_name):
-        print('{} does not exist.'.format(FLAGS.database_file_name))
-        return
-
-    gs = gSpan(
-        database_file_name=FLAGS.database_file_name,
-        min_support=FLAGS.min_support,
-        min_num_vertices=FLAGS.lower_bound_of_num_vertices,
-        max_num_vertices=FLAGS.upper_bound_of_num_vertices,
-        max_ngraphs=FLAGS.num_graphs,
-        is_undirected=(not FLAGS.directed),
-        verbose=FLAGS.verbose,
-        visualize=FLAGS.plot,
-        where=FLAGS.where
-    )
-
-    gs.run()
-    gs.time_stats()
-    return gs
-
+    gspan = gSpan(database_file_name,
+                  min_support=min_support,
+                  min_weighted_support=min_weighted_support,
+                  min_num_vertices=min_num_vertices,
+                  max_num_vertices=max_num_vertices,
+                  max_ngraphs=max_ngraphs,
+                  is_undirected=is_undirected,
+                  verbose=verbose,
+                  visualize=visualize,
+                  where=where)
+    return gspan.run()
 
 if __name__ == '__main__':
     main()
