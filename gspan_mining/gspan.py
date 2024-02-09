@@ -5,6 +5,8 @@ import time
 import numpy as np
 import math
 import pandas as pd
+import codecs
+
 
 
 from .graph import AUTO_EDGE_ID
