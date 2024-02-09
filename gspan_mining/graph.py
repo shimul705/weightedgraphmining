@@ -1,8 +1,4 @@
 """Definitions of Edge, Vertex and Graph."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from collections import defaultdict
 import networkx as nx
 import matplotlib.pyplot as plt
@@ -13,8 +9,6 @@ VACANT_EDGE_LABEL = -1
 AUTO_EDGE_ID = -1
 VACANT_GRAPH_ID = -1
 VACANT_VERTEX_LABEL = -1
-
-
 
 class Vertex(object):
     """Vertex class."""
@@ -107,4 +101,3 @@ class Graph(object):
 
         plt.axis("off")
         plt.show()
-

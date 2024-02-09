@@ -1,21 +1,14 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import codecs
-import collections
+from collections import defaultdict
 import copy
 import itertools
 import time
-
+import numpy as np
+import math
 
 from .graph import AUTO_EDGE_ID
 from .graph import Graph
 from .graph import VACANT_GRAPH_ID
 from .graph import VACANT_VERTEX_LABEL
-
-import pandas as pd
-
 
 def record_timestamp(func):
     """Record timestamp before and after call of `func`."""
@@ -25,21 +18,22 @@ def record_timestamp(func):
         self.timestamps[func.__name__ + '_out'] = time.time()
     return deco
 
-
 class DFSedge(object):
     """DFSedge class."""
 
-    def __init__(self, frm, to, vevlb):
+    def __init__(self, frm, to, vevlb, weight=1):
         """Initialize DFSedge instance."""
         self.frm = frm
         self.to = to
         self.vevlb = vevlb
+        self.weight = weight
 
     def __eq__(self, other):
         """Check equivalence of DFSedge."""
         return (self.frm == other.frm and
                 self.to == other.to and
-                self.vevlb == other.vevlb)
+                self.vevlb == other.vevlb and
+                self.weight == other.weight)
 
     def __ne__(self, other):
         """Check if not equal."""
@@ -47,10 +41,9 @@ class DFSedge(object):
 
     def __repr__(self):
         """Represent DFScode in string way."""
-        return '(frm={}, to={}, vevlb={})'.format(
-            self.frm, self.to, self.vevlb
+        return '(frm={}, to={}, vevlb={}, weight={})'.format(
+            self.frm, self.to, self.vevlb, self.weight
         )
-
 
 class DFScode(list):
     """DFScode is a list of DFSedge."""
@@ -79,9 +72,9 @@ class DFScode(list):
             [str(dfsedge) for dfsedge in self]), ']']
         )
 
-    def push_back(self, frm, to, vevlb):
+    def push_back(self, frm, to, vevlb, weight=1):
         """Update DFScode by adding one edge."""
-        self.append(DFSedge(frm, to, vevlb))
+        self.append(DFSedge(frm, to, vevlb, weight))
         return self
 
     def to_graph(self, gid=VACANT_GRAPH_ID, is_undirected=True):
@@ -90,37 +83,13 @@ class DFScode(list):
                   is_undirected=is_undirected,
                   eid_auto_increment=True)
         for dfsedge in self:
-            frm, to, (vlb1, elb, vlb2) = dfsedge.frm, dfsedge.to, dfsedge.vevlb
+            frm, to, (vlb1, elb, vlb2), weight = dfsedge.frm, dfsedge.to, dfsedge.vevlb, dfsedge.weight
             if vlb1 != VACANT_VERTEX_LABEL:
                 g.add_vertex(frm, vlb1)
             if vlb2 != VACANT_VERTEX_LABEL:
                 g.add_vertex(to, vlb2)
-            g.add_edge(AUTO_EDGE_ID, frm, to, elb)
+            g.add_edge(AUTO_EDGE_ID, frm, to, elb, weight)
         return g
-
-    def from_graph(self, g):
-        """Build DFScode from graph `g`."""
-        raise NotImplementedError('Not implemented yet.')
-
-    def build_rmpath(self):
-        """Build right most path."""
-        self.rmpath = list()
-        old_frm = None
-        for i in range(len(self) - 1, -1, -1):
-            dfsedge = self[i]
-            frm, to = dfsedge.frm, dfsedge.to
-            if frm < to and (old_frm is None or to == old_frm):
-                self.rmpath.append(i)
-                old_frm = frm
-        return self
-
-    def get_num_vertices(self):
-        """Return number of vertices in the corresponding graph."""
-        return len(set(
-            [dfsedge.frm for dfsedge in self] +
-            [dfsedge.to for dfsedge in self]
-        ))
-
 
 class PDFS(object):
     """PDFS class."""
@@ -130,7 +99,6 @@ class PDFS(object):
         self.gid = gid
         self.edge = edge
         self.prev = prev
-
 
 class Projected(list):
     """Projected is a list of PDFS.
@@ -148,7 +116,6 @@ class Projected(list):
         self.append(PDFS(gid, edge, prev))
         return self
 
-
 class History(object):
     """History class."""
 
@@ -156,8 +123,8 @@ class History(object):
         """Initialize History instance."""
         super(History, self).__init__()
         self.edges = list()
-        self.vertices_used = collections.defaultdict(int)
-        self.edges_used = collections.defaultdict(int)
+        self.vertices_used = defaultdict(int)
+        self.edges_used = defaultdict(int)
         if pdfs is None:
             return
         while pdfs:
@@ -177,7 +144,6 @@ class History(object):
     def has_edge(self, eid):
         """Check if the edge with eid exists in the history."""
         return self.edges_used[eid] == 1
-
 
 class gSpan(object):
     """`gSpan` algorithm."""
@@ -203,8 +169,6 @@ class gSpan(object):
         self._DFScode = DFScode()
         self._support = 0
         self._frequent_size1_subgraphs = list()
-        # Include subgraphs with
-        # any num(but >= 2, <= max_num_vertices) of vertices.
         self._frequent_subgraphs = list()
         self._counter = itertools.count()
         self._verbose = verbose
@@ -221,7 +185,7 @@ class gSpan(object):
     def time_stats(self):
         """Print stats of time."""
         func_names = ['_read_graphs', 'run']
-        time_deltas = collections.defaultdict(float)
+        time_deltas = defaultdict(float)
         for fn in func_names:
             time_deltas[fn] = round(
                 self.timestamps[fn + '_out'] - self.timestamps[fn + '_in'],
@@ -256,7 +220,7 @@ class gSpan(object):
                 elif cols[0] == 'v':
                     tgraph.add_vertex(cols[1], cols[2])
                 elif cols[0] == 'e':
-                    tgraph.add_edge(AUTO_EDGE_ID, cols[1], cols[2], cols[3])
+                    tgraph.add_edge(AUTO_EDGE_ID, cols[1], cols[2], cols[3], int(cols[4]))
             # adapt to input files that do not end with 't # -1'
             if tgraph is not None:
                 self.graphs[graph_cnt] = tgraph
@@ -264,8 +228,8 @@ class gSpan(object):
 
     @record_timestamp
     def _generate_1edge_frequent_subgraphs(self):
-        vlb_counter = collections.Counter()
-        vevlb_counter = collections.Counter()
+        vlb_counter = defaultdict(int)
+        vevlb_counter = defaultdict(int)
         vlb_counted = set()
         vevlb_counted = set()
         for g in self.graphs.values():
@@ -292,7 +256,7 @@ class gSpan(object):
             else:
                 continue
         if self._min_num_vertices > 1:
-            self._counter = itertools.count()
+            self._counter = iter(range(1, 1000000))
 
     @record_timestamp
     def run(self):
@@ -301,7 +265,7 @@ class gSpan(object):
         self._generate_1edge_frequent_subgraphs()
         if self._max_num_vertices < 2:
             return
-        root = collections.defaultdict(Projected)
+        root = defaultdict(Projected)
         for gid, g in self.graphs.items():
             for vid, v in g.vertices.items():
                 edges = self._get_forward_root_edges(g, vid)
@@ -331,18 +295,6 @@ class gSpan(object):
                                    is_undirected=self._is_undirected)
         display_str = g.display()
         print('\nSupport: {}'.format(self._support))
-
-        # Add some report info to pandas dataframe "self._report_df".
-        self._report_df = self._report_df.append(
-            pd.DataFrame(
-                {
-                    'support': [self._support],
-                    'description': [display_str],
-                    'num_vert': self._DFScode.get_num_vertices()
-                },
-                index=[int(repr(self._counter)[6:-1])]
-            )
-        )
         if self._visualize:
             g.plot()
         if self._where:
@@ -384,70 +336,75 @@ class gSpan(object):
             return
         forward_root_edges = []
         for pdfs in projected:
-            gid, edge = pdfs.gid, pdfs.edge
-            if edge is None:
+            for frm, v in self.graphs[pdfs.gid].vertices.items():
+                if not history.has_vertex(frm):
+                    forward_root_edges += [
+                        (frm, e) for e in self._get_forward_root_edges(
+                            self.graphs[pdfs.gid], frm)]
+        for frm, e in forward_root_edges:
+            new_history = copy.deepcopy(history)
+            g = self._DFScode.to_graph()
+            frm_vlb = g.vertices[e.frm].vlb
+            to_vlb = g.vertices[e.to].vlb
+            elb = e.elb
+            if self._is_undirected and frm_vlb > to_vlb:
+                frm_vlb, to_vlb = to_vlb, frm_vlb
+            vevlb = (frm_vlb, elb, to_vlb)
+            self._DFScode.append(DFSedge(frm, len(self._DFScode) + 1, vevlb))
+            if not self._can_add_edge(new_history):
+                self._DFScode.pop()
                 continue
-            g = self.graphs[gid]
-            frm = edge.to if edge.frm == 0 else edge.frm
-            forward_root_edges.extend(
-                self._get_forward_root_edges(g, frm)
-            )
-        forward_root_edges.sort(key=lambda x: (x.elb,
-                                                g.vertices[x.to].vlb))
-        if not forward_root_edges:
-            return
-        maxtoc = forward_root_edges[0].to
-        while forward_root_edges:
-            edge = forward_root_edges.pop()
-            to = edge.to
-            vevlb = (g.vertices[maxtoc].vlb,
-                     edge.elb,
-                     g.vertices[to].vlb)
-            self._DFScode.push_back(maxtoc, to, vevlb)
-            new_projected = self._project(projected, edge, history)
-            self._subgraph_mining(new_projected)
+            extensions = []
+            backward_edges = []
+            for pdfs in projected:
+                if pdfs.edge is None or pdfs.edge.to != frm:
+                    continue
+                for prev in pdfs.prev:
+                    if self._is_forward_edge(prev.edge):
+                        extensions.append(pdfs)
+                    else:
+                        backward_edges.append(pdfs)
+            if extensions:
+                self._subgraph_mining(extensions)
+            if backward_edges:
+                if self._max_num_vertices > self._DFScode.get_num_vertices():
+                    if self._DFScode.get_num_vertices() >= self._min_num_vertices - 1:
+                        self._subgraph_mining(backward_edges)
             self._DFScode.pop()
-            if not self._is_min(new_projected):
-                break
-            if edge != forward_root_edges[-1]:
-                be = self._get_backward_edge(g, edge, forward_root_edges[-1], history)
-                if be is None:
-                    break
-                maxtoc = be.to
 
     def _can_add_vertex(self, history):
+        if self._max_num_vertices <= self._DFScode.get_num_vertices():
+            return False
         if not history.edges:
             return True
-        back = history.edges[-1]
-        return not history.has_vertex(back.frm) or \
-               not history.has_vertex(back.to)
+        if self._DFScode.get_num_vertices() == 1:
+            return True
+        return self._DFScode.get_num_vertices() < self._max_num_vertices
 
-    def _project(self, projected, edge, history):
-        new_projected = Projected()
-        for p in projected:
-            g = self.graphs[p.gid]
-            rm_edge = None
-            if p.edge is not None:
-                if self._is_forward_edge(p.edge):
-                    rm_edge = self._get_backward_edge(g, p.edge, edge, history)
-                else:
-                    rm_edge = p.edge
-            for vid, v in g.vertices[edge.to].edges.items():
-                if vid == edge.frm:
-                    continue
-                if history.has_vertex(vid):
-                    continue
-                if rm_edge is not None and \
-                        rm_edge != v:
-                    continue
-                new_projected.push_back(p.gid, v, p)
-        return new_projected
+    def _can_add_edge(self, history):
+        if self._DFScode.get_num_edges() < self._DFScode.get_num_vertices() - 1:
+            return False
+        if not history.edges:
+            return True
+        for i in range(len(self._DFScode)):
+            if not self._DFScode[i].eq(history.edges[i]):
+                return False
+        return True
 
-    def _is_forward_edge(self, e):
-        return e.frm != 0
+    def _is_forward_edge(self, edge):
+        if not edge:
+            return False
+        if edge.eid != AUTO_EDGE_ID:
+            return False
+        return True
 
-    def plot(self):
-        """Plot the frequent subgraphs."""
-        for g in self._frequent_subgraphs:
-            g.plot()
-
+    def print_stats(self):
+        """Print stats."""
+        print('Minimum Support: {}'.format(self._min_support))
+        print('Minimum Number of Vertices: {}'.format(self._min_num_vertices))
+        print('Maximum Number of Vertices: {}'.format(self._max_num_vertices))
+        print('Maximum Number of Graphs: {}'.format(self._max_ngraphs))
+        print('Number of Graphs: {}'.format(len(self.graphs)))
+        print('Number of Frequent Subgraphs: {}'.format(
+            len(self._frequent_subgraphs)))
+        return self
