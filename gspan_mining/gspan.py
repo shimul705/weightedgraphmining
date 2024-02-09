@@ -295,70 +295,72 @@ class gSpan(object):
         return frequent_subgraphs
 
     @record_timestamp
-    def _subgraph_mining(self, projected):
-        """Return the report dataframe of the projected frequent subgraphs."""
-        self._support = len(projected)
-        if self._support >= self._min_support:
-            if self._DFScode.get_num_vertices() < self._min_num_vertices:
-                return pd.DataFrame()
-
-            if self._verbose:
-                print('frequent subgraph:', self._DFScode, 'support:', self._support)
-
-            self._frequent_subgraphs.append(
-                (copy.deepcopy(self._DFScode), self._support)
-            )
-        if self._DFScode.get_num_vertices() == self._max_num_vertices:
+    @record_timestamp
+def _subgraph_mining(self, projected, gid):
+    """Return the report dataframe of the projected frequent subgraphs."""
+    self._support = len(projected)
+    if self._support >= self._min_support:
+        if self._DFScode.get_num_vertices() < self._min_num_vertices:
             return pd.DataFrame()
 
+        if self._verbose:
+            print('frequent subgraph:', self._DFScode, 'support:', self._support)
+
+        self._frequent_subgraphs.append(
+            (copy.deepcopy(self._DFScode), self._support)
+        )
+    if self._DFScode.get_num_vertices() == self._max_num_vertices:
+        return pd.DataFrame()
+
+    if self._where:
+        projected = sorted(projected,
+                           key=lambda p: (self.graphs[p.gid].name,
+                                          p.edge.frm if p.edge else -1))
+
+    history = History(None, None)
+    for i, pdfs in enumerate(projected):
+        gid = pdfs.gid
         if self._where:
-            projected = sorted(projected,
-                               key=lambda p: (self.graphs[p.gid].name,
-                                              p.edge.frm if p.edge else -1))
+            graph_name = self.graphs[gid].name
+        else:
+            graph_name = None
+        if pdfs.edge:
+            if pdfs.edge.frm != VACANT_VERTEX_LABEL:
+                vlb_fr, vlb_to = self.graphs[gid].vertices[pdfs.edge.frm], \
+                                 self.graphs[gid].vertices[pdfs.edge.to]
+                elb = self.graphs[gid].edges[pdfs.edge.eid].elb
+                history.vertices_used[vlb_fr] = 1
+                history.vertices_used[vlb_to] = 1
+                history.edges_used[pdfs.edge.eid] = 1
+                self._DFScode.push_back(pdfs.edge.frm,
+                                        pdfs.edge.to,
+                                        (vlb_fr, elb, vlb_to))
 
-        history = History(None, None)
-        for i, pdfs in enumerate(projected):
-            gid = pdfs.gid
-            if self._where:
-                graph_name = self.graphs[gid].name
-            else:
-                graph_name = None
-            if pdfs.edge:
-                if pdfs.edge.frm != VACANT_VERTEX_LABEL:
-                    vlb_fr, vlb_to = self.graphs[gid].vertices[pdfs.edge.frm], \
-                                     self.graphs[gid].vertices[pdfs.edge.to]
-                    elb = self.graphs[gid].edges[pdfs.edge.eid].elb
-                    history.vertices_used[vlb_fr] = 1
-                    history.vertices_used[vlb_to] = 1
-                    history.edges_used[pdfs.edge.eid] = 1
-                    self._DFScode.push_back(pdfs.edge.frm,
-                                            pdfs.edge.to,
-                                            (vlb_fr, elb, vlb_to))
+        if self._verbose:
+            print('projected graph:', i, 'graph id:', gid, 'graph name:', graph_name)
+        self._projected = self._projected[:0]
+        self._projected = self._projected + projected[i + 1:]
 
+        # `get_candidates` might be empty when it is called for the first time,
+        # since it is calculated for the first time.
+        if pdfs.edge is None:
+            current_candidates = self._get_candidates(gid, None, None)
+        else:
+            current_candidates = self._get_candidates(
+                gid, pdfs.edge.to, history
+            )
+        if self._verbose:
+            print('current candidates:', len(current_candidates))
+        for edge in current_candidates:
             if self._verbose:
-                print('projected graph:', i, 'graph id:', gid, 'graph name:', graph_name)
-            self._projected = self._projected[:0]
-            self._projected = self._projected + projected[i + 1:]
+                print('candidate edge:', edge)
+            new_dfscode = copy.deepcopy(self._DFScode)
+            new_pdfsg = self._projected_graph(gid, edge)
+            if new_pdfsg:
+                new_projected = copy.deepcopy(self._projected)
+                new_projected = new_projected.push_back(gid, edge, pdfs)
+                self._subgraph_mining(new_projected, gid)
 
-            # `get_candidates` might be empty when it is called for the first time,
-            # since it is calculated for the first time.
-            if pdfs.edge is None:
-                current_candidates = self._get_candidates(gid, None, None)
-            else:
-                current_candidates = self._get_candidates(
-                    gid, pdfs.edge.to, history
-                )
-            if self._verbose:
-                print('current candidates:', len(current_candidates))
-            for edge in current_candidates:
-                if self._verbose:
-                    print('candidate edge:', edge)
-                new_dfscode = copy.deepcopy(self._DFScode)
-                new_pdfsg = self._projected_graph(gid, edge)
-                if new_pdfsg:
-                    new_projected = copy.deepcopy(self._projected)
-                    new_projected = new_projected.push_back(gid, edge, pdfs)
-                    self._subgraph_mining(new_projected)
 
     def _get_candidates(self, gid, last_vertex, history):
         """Return candidate edges of a graph."""
