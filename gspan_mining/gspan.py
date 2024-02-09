@@ -8,6 +8,7 @@ import copy
 import itertools
 import time
 
+
 from .graph import AUTO_EDGE_ID
 from .graph import Graph
 from .graph import VACANT_GRAPH_ID
