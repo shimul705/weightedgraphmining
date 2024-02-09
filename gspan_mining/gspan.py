@@ -296,7 +296,7 @@ class gSpan(object):
 
     @record_timestamp
     @record_timestamp
-def _subgraph_mining(self, projected, gid):
+    def _subgraph_mining(self, projected, gid):
     """Return the report dataframe of the projected frequent subgraphs."""
     self._support = len(projected)
     if self._support >= self._min_support:
