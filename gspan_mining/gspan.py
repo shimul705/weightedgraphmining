@@ -361,6 +361,13 @@ class gSpan(object):
                     new_projected = new_projected.push_back(gid, edge, pdfs)
                     self._subgraph_mining(new_projected, gid)
 
+        # Create or access the 'support' column of the DataFrame
+        if 'support' not in self._report_df.columns:
+            self._report_df['support'] = self._support
+        else:
+            self._report_df['support'] = self._report_df['support'].astype(int)
+
+
 
 
     def _get_candidates(self, gid, last_vertex, history):
