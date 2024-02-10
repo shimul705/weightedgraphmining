@@ -91,7 +91,7 @@ class DFScode(list):
                   eid_auto_increment=True)
         for dfsedge in self:
             frm, to, (vlb1, elb, vlb2, weight) = dfsedge.frm, dfsedge.to, dfsedge.vevlb[:3]
-            weight = dfsedge.vevlb[3] if len(dfsedge.vevlb)>3
+            weight = dfsedge.vevlb[3] if len(dfsedge.vevlb)>3 else None
             if vlb1 != VACANT_VERTEX_LABEL:
                 g.add_vertex(frm, vlb1)
             if vlb2 != VACANT_VERTEX_LABEL:
