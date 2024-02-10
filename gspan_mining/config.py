@@ -18,6 +18,14 @@ parser.add_argument(
     default=5000,
     help='min support, default 5000'
 )
+
+parser.add_argument(
+    '-lw', '--min_weight_support', 
+    type=int, 
+    default=10, 
+    help='Minimum support threshold for edge weight'
+    )
+
 parser.add_argument(
     '-n', '--num_graphs',
     type=float,

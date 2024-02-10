@@ -24,6 +24,7 @@ def main(FLAGS=None):
     gs = gSpan(
         database_file_name=FLAGS.database_file_name,
         min_support=FLAGS.min_support,
+        min_weight_support=FLAGS.min_weight_support,
         min_num_vertices=FLAGS.lower_bound_of_num_vertices,
         max_num_vertices=FLAGS.upper_bound_of_num_vertices,
         max_ngraphs=FLAGS.num_graphs,
