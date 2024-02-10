@@ -20,7 +20,7 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    '-lw', '--min_weight_support', 
+    '-ws', '--min_weight_support', 
     type=int, 
     default=10, 
     help='Minimum support threshold for edge weight'
