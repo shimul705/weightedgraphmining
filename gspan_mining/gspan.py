@@ -90,8 +90,7 @@ class DFScode(list):
                   is_undirected=is_undirected,
                   eid_auto_increment=True)
         for dfsedge in self:
-            frm, to, (vlb1, elb, vlb2, weight) = dfsedge.frm, dfsedge.to, dfsedge.vevlb[:3]
-            weight = dfsedge.vevlb[3] if len(dfsedge.vevlb)>3 else None
+            frm, to, (vlb1, elb, vlb2, weight) = dfsedge.frm, dfsedge.to, dfsedge.vevlb
             if vlb1 != VACANT_VERTEX_LABEL:
                 g.add_vertex(frm, vlb1)
             if vlb2 != VACANT_VERTEX_LABEL:
@@ -244,22 +243,23 @@ class gSpan(object):
         with codecs.open(self._database_file_name, 'r', 'utf-8') as f:
             lines = [line.strip() for line in f.readlines()]
             tgraph, graph_cnt = None, 0
-            for i, line in enumerate(lines):
+            for line in lines:
                 cols = line.split(' ')
                 if cols[0] == 't':
                     if tgraph is not None:
                         self.graphs[graph_cnt] = tgraph
                         graph_cnt += 1
-                        tgraph = None
                     if cols[-1] == '-1' or graph_cnt >= self._max_ngraphs:
                         break
                     tgraph = Graph(graph_cnt,
                                    is_undirected=self._is_undirected,
                                    eid_auto_increment=True)
                 elif cols[0] == 'v':
-                    tgraph.add_vertex(cols[1], cols[2])
+                    vid, vlb = int(cols[1]), int(cols[2])
+                    tgraph.add_vertex(vid, vlb)
                 elif cols[0] == 'e':
-                    tgraph.add_edge(AUTO_EDGE_ID, cols[1], cols[2], cols[3], cols[4])  # Add weight
+                    frm, to, elb, weight = int(cols[1]), int(cols[2]), int(cols[3]), int(cols[4])
+                    tgraph.add_edge(AUTO_EDGE_ID, frm, to, elb, weight)
             # adapt to input files that do not end with 't # -1'
             if tgraph is not None:
                 self.graphs[graph_cnt] = tgraph
@@ -349,36 +349,49 @@ class gSpan(object):
         for frm, to, vevlb in self._DFScode.build_rmpath().rmpath:
             new_projected = Projected()
             for p in projected:
-                history = History(self.graphs[p.gid], p)
-                edges = self._get_forward_edges(
-                    self.graphs[p.gid], to, history)
-                for e in edges:
-                    if is_min and e.to == frm:
-                        continue
-                    if (frm, e.elb, self.graphs[p.gid].vertices[e.to].vlb) < vevlb:
-                        new_projected.append(
-                            PDFS(p.gid, e, p)
-                        )
-            self._DFScode.append(DFSedge(frm, to, vevlb))
-            self._subgraph_mining(new_projected)
+                sg = self._project(p, frm, to)
+                if sg:
+                    new_projected.append(sg)
             self._DFScode.pop()
-            is_min = False
+            if new_projected:
+                self._DFScode.push_back(frm, to, vevlb)
+                self._subgraph_mining(new_projected)
+                is_min = False
+                self._DFScode.pop()
+        if is_min:
+            self._DFScode.build_rmpath()
 
-    def _get_forward_edges(self, g, vid, history):
-        edges = list()
-        if vid in history.vertices_used:
-            return edges
-        history.vertices_used[vid] = 1
-        for to, e in g.vertices[vid].edges.items():
-            if history.has_edge(e.eid):
-                continue
-            if history.has_vertex(to):
-                continue
-            edges.append(e)
-        return edges
+    def _project(self, p, frm, to):
+        edge = p.edge
+        history = History(self.graphs[p.gid], p)
+        graph = self.graphs[p.gid]
+        if (edge is not None and
+                (history.has_vertex(frm) or history.has_vertex(to) or
+                    history.has_edge(edge.eid))):
+            return None
+        frm_vertex = graph.vertices[frm]
+        to_vertex = graph.vertices[to]
+        if edge is None and frm < to:
+            new_edge = None
+            if self._is_undirected:
+                new_edge = frm_vertex.edges[to]
+            else:
+                for e in frm_vertex.edges.values():
+                    if e.to == to:
+                        new_edge = e
+                        break
+            if new_edge is not None:
+                return Projected().push_back(
+                    p.gid, new_edge, p
+                )
+        else:
+            return None
 
     def _get_forward_root_edges(self, g, vid):
         edges = list()
-        for to, e in g.vertices[vid].edges.items():
-            edges.append(e)
+        v = g.vertices[vid]
+        for to, e in v.edges.items():
+            if vid < to:
+                edges.append(e)
         return edges
+
